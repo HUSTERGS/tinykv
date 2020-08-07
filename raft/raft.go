@@ -208,18 +208,12 @@ func (r *Raft) tick() {
 		// 如果是leader
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
-			// 如果heartbeat超时，那么需要发送消息
-			for k := range r.Prs {
-				if k != r.id {
-					r.msgs = append(r.msgs, pb.Message{
-						MsgType: pb.MessageType_MsgHeartbeat,
-						To:      k,
-						From:    r.id,
-						Term:    r.Term,
-					})
-				}
-			}
-			r.heartbeatElapsed = 0
+			r.Step(pb.Message{
+				MsgType:              pb.MessageType_MsgBeat,
+				To:                   r.id,
+				From:                 r.id,
+			})
+
 		}
 		//请问raft_paper_test里面的testNonleaderStartElection测试里面，因为超时了两次
 	case StateCandidate, StateFollower:
@@ -240,6 +234,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
 	r.Term = term
 	r.Lead = lead
+	r.Vote = None
 	r.State = StateFollower
 }
 
@@ -292,9 +287,10 @@ func (r *Raft) becomeLeader() {
 
 // 比较日志，返回是否可以投票
 func (r * Raft) allowVote(m pb.Message) bool {
-	if r.Vote != None {
+	if r.Term == m.Term && r.Vote != m.From && r.Vote != None {
 		return false
 	}
+
 	lastTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
 	if m.LogTerm > lastTerm || (m.LogTerm == lastTerm && m.Index >= r.RaftLog.LastIndex()) {
 		r.Vote = m.From
@@ -315,13 +311,28 @@ func (r *Raft) Step(m pb.Message) error {
 		//case pb.MessageType_MsgAppendResponse:
 		//case pb.MessageType_MsgAppend:
 		case pb.MessageType_MsgRequestVote:
-			r.msgs = append(r.msgs, pb.Message{
-				MsgType:              pb.MessageType_MsgRequestVoteResponse,
-				To:                   m.From,
-				From:                 r.id,
-				Term:                 r.Term,
-				Reject:               !(r.Vote == m.From && r.Term == m.Term || r.allowVote(m)),
-			})
+			if m.Term > r.Term {
+				r.Vote = None
+				r.Term = m.Term
+			}
+			if m.Term < r.Term {
+				r.msgs = append(r.msgs, pb.Message{
+					MsgType:              pb.MessageType_MsgRequestVoteResponse,
+					To:                   m.From,
+					From:                 r.id,
+					Term:                 r.Term,
+					Reject:               true,
+				})
+			} else {
+				r.msgs = append(r.msgs, pb.Message{
+					MsgType:              pb.MessageType_MsgRequestVoteResponse,
+					To:                   m.From,
+					From:                 r.id,
+					Term:                 r.Term,
+					Reject:               !r.allowVote(m),
+				})
+			}
+
 		//case pb.MessageType_MsgRequestVoteResponse:
 		//case pb.MessageType_MsgBeat:
 		//case pb.MessageType_MsgHeartbeat:
@@ -378,6 +389,12 @@ func (r *Raft) Step(m pb.Message) error {
 				r.handleAppendEntries(m)
 			}
 		case pb.MessageType_MsgRequestVoteResponse:
+			if m.Term > r.Term {
+				r.becomeFollower(m.Term, None)
+				break
+			} else if m.Term < r.Term{
+				break
+			}
 			r.votes[m.From] = !m.Reject
 			count := 0
 			for _, v := range r.votes {
@@ -393,21 +410,72 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgHup:
 			r.Term++
 			r.startNewRoundVoteRequest()
+		case pb.MessageType_MsgRequestVote:
+			if m.Term > r.Term {
+				r.becomeFollower(m.Term, None)
+				r.msgs = append(r.msgs, pb.Message{
+					MsgType:              pb.MessageType_MsgRequestVoteResponse,
+					To:                   m.From,
+					From:                 r.id,
+					Term:                 r.Term,
+					Reject:               !r.allowVote(m),
+				})
+			} else {
+				r.msgs = append(r.msgs, pb.Message{
+					MsgType:              pb.MessageType_MsgRequestVoteResponse,
+					To:                   m.From,
+					From:                 r.id,
+					Term:                 r.Term,
+					Reject:               true,
+				})
+			}
 		}
 
 	case StateLeader:
 		switch m.MsgType {
 		case pb.MessageType_MsgAppend:
 			if m.Term > r.Term {
-				r.becomeFollower(m.Term, r.Term)
+				r.becomeFollower(m.Term, None)
 			} else {
 
 			}
+		case pb.MessageType_MsgBeat:
+			// 如果heartbeat超时，那么需要发送消息
+			for k := range r.Prs {
+				if k != r.id {
+					r.msgs = append(r.msgs, pb.Message{
+						MsgType: pb.MessageType_MsgHeartbeat,
+						To:      k,
+						From:    r.id,
+						Term:    r.Term,
+					})
+				}
+			}
+			r.heartbeatElapsed = 0
 		case pb.MessageType_MsgPropose:
 			// 本地传来的append请求
 			r.handleAppendEntries(m)
-		}
+		case pb.MessageType_MsgRequestVote:
+			if m.Term > r.Term {
+				r.becomeFollower(m.Term, None)
+				r.msgs = append(r.msgs, pb.Message{
+					MsgType:              pb.MessageType_MsgRequestVoteResponse,
+					To:                   m.From,
+					From:                 r.id,
+					Term:                 r.Term,
+					Reject:               !r.allowVote(m),
+				})
+			} else {
+				r.msgs = append(r.msgs, pb.Message{
+					MsgType:              pb.MessageType_MsgRequestVoteResponse,
+					To:                   m.From,
+					From:                 r.id,
+					Term:                 r.Term,
+					Reject:               true,
+				})
+			}
 
+		}
 	}
 	return nil
 }
