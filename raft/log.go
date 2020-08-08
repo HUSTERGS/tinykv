@@ -63,7 +63,7 @@ func newLog(storage Storage) *RaftLog {
 	return &RaftLog{
 		storage:         storage,
 		entries:         ents,
-		stabled: lastIndex,
+		stabled:         lastIndex,
 	}
 }
 
@@ -77,29 +77,76 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+
+	// 全部都是stable
+	if l.stabled == l.LastIndex() {
+		return []pb.Entry{}
+	}
+	var ents []pb.Entry
+	for i := l.stabled+1; i <= l.LastIndex() ;i++{
+		ents = append(ents, *l.GetEntry(i))
+	}
+	return ents
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	return l.entries[l.applied+1-l.entries[0].Index:l.committed+1-l.entries[0].Index]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	// 暂时不管错误
-	i, _ := l.storage.LastIndex()
-	return i
+	if len(l.entries) == 0 {
+		i, _ := l.storage.LastIndex()
+		return i
+	}
+	return l.entries[0].Index + uint64(len(l.entries)) - 1
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if i > l.LastIndex() {
+
+	if len(l.entries) == 0{
+		return l.storage.Term(i)
+	} else if i > l.LastIndex() {
 		return 0, nil
 	} else {
-		return l.storage.Term(i)
+		return l.GetEntry(i).Term, nil
 	}
+}
+
+func (l * RaftLog) LastTerm() uint64 {
+	term, err := l.Term(l.LastIndex())
+	if err != nil {
+		return 0
+	}
+	return term
+}
+
+func (l * RaftLog) AppendEntry(ent *pb.Entry) {
+	l.entries = append(l.entries, *ent)
+}
+
+func (l * RaftLog) AppendEntries(ents []*pb.Entry) {
+	for _, ent := range ents {
+		l.AppendEntry(ent)
+	}
+}
+
+func (l * RaftLog) GetEntry(i uint64) *pb.Entry {
+	if i == 0 {
+		return &pb.Entry{Term: 0, Index: 0}
+	}
+	if len(l.entries) == 0 || l.entries[0].Index > i{
+		ent, _ := l.storage.Entries(i, i+1)
+		return &ent[0]
+	}
+	if l.LastIndex() >= i {
+		return &l.entries[i - l.entries[0].Index]
+	}
+	return nil
 }
