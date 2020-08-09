@@ -16,8 +16,8 @@ package raft
 
 import (
 	"errors"
-
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"reflect"
 )
 
 // ErrStepLocalMsg is returned when try to step a local raft message
@@ -69,13 +69,20 @@ type Ready struct {
 // RawNode is a wrapper of Raft.
 type RawNode struct {
 	Raft *Raft
+	prevSoftState * SoftState
+	prevHardState pb.HardState
 	// Your Data Here (2A).
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	r := newRaft(config)
+	return &RawNode{
+		Raft:      r,
+		prevHardState: r.getHardState(),
+		prevSoftState: r.getSoftState(),
+	}, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -143,19 +150,49 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	var softState *SoftState
+	hardState := pb.HardState{}
+	if !reflect.DeepEqual(rn.prevSoftState, rn.Raft.getSoftState()) {
+		softState = rn.Raft.getSoftState()
+	}
+
+	if !reflect.DeepEqual(rn.prevHardState, rn.Raft.getHardState()) {
+		hardState = rn.Raft.getHardState()
+	}
+	return Ready{
+		SoftState:        softState,
+		HardState:        hardState,
+		Entries:          rn.Raft.RaftLog.unstableEntries(),
+		Snapshot:         pb.Snapshot{},
+		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
+		Messages:         rn.Raft.msgs,
+	}
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	return false
+	//return !reflect.DeepEqual(rn.lastReady, rn.Ready())
+	return reflect.DeepEqual(rn.prevHardState, rn.Raft.getHardState()) && reflect.DeepEqual(rn.prevSoftState, rn.Raft.getSoftState())
+
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	//rn.Raft.Vote = rd.Vote
+	//rn.Raft.State = rd.RaftState
+	//rn.Raft.Lead = rd.Lead
+
+	rn.Raft.msgs = make([]pb.Message, 0)
+	rn.prevSoftState = rd.SoftState
+	rn.prevHardState = rd.HardState
+	if len(rd.Entries) != 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+		rn.Raft.RaftLog.applied = rd.Entries[len(rd.Entries)-1].Index
+		rn.Raft.RaftLog.committed = max(rn.Raft.RaftLog.committed, rn.Raft.RaftLog.stabled)
+	}
 }
 
 // GetProgress return the the Progress of this node and its peers, if this
@@ -174,3 +211,4 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }
+

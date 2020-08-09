@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -77,42 +79,38 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-
-	// 全部都是stable
-	if l.stabled == l.LastIndex() {
-		return []pb.Entry{}
-	}
-	var ents []pb.Entry
+	ents := make([]pb.Entry, 0)
 	for i := l.stabled+1; i <= l.LastIndex() ;i++{
 		ents = append(ents, *l.GetEntry(i))
 	}
 	return ents
 }
 
+
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return l.entries[l.applied+1-l.entries[0].Index:l.committed+1-l.entries[0].Index]
+	ent := make([]pb.Entry, 0)
+	for i := l.applied+1; i <= l.committed; i++ {
+		ent = append(ent, *l.GetEntry(i))
+	}
+	return ent
+	//return l.entries[l.applied+1-l.entries[0].Index:l.committed+1-l.entries[0].Index]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	// 暂时不管错误
 	if len(l.entries) == 0 {
-		i, _ := l.storage.LastIndex()
-		return i
+		return 0
 	}
-	return l.entries[0].Index + uint64(len(l.entries)) - 1
+	return l.entries[len(l.entries)-1].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-
-	if len(l.entries) == 0{
-		return l.storage.Term(i)
-	} else if i > l.LastIndex() {
+	if len(l.entries) == 0 || i > l.LastIndex(){
 		return 0, nil
 	} else {
 		return l.GetEntry(i).Term, nil
@@ -120,10 +118,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 }
 
 func (l * RaftLog) LastTerm() uint64 {
-	term, err := l.Term(l.LastIndex())
-	if err != nil {
-		return 0
-	}
+	term, _ := l.Term(l.LastIndex())
 	return term
 }
 
@@ -138,15 +133,9 @@ func (l * RaftLog) AppendEntries(ents []*pb.Entry) {
 }
 
 func (l * RaftLog) GetEntry(i uint64) *pb.Entry {
-	if i == 0 {
+	if len(l.entries) == 0 || l.entries[0].Index > i || i == 0{
 		return &pb.Entry{Term: 0, Index: 0}
-	}
-	if len(l.entries) == 0 || l.entries[0].Index > i{
-		ent, _ := l.storage.Entries(i, i+1)
-		return &ent[0]
-	}
-	if l.LastIndex() >= i {
+	} else {
 		return &l.entries[i - l.entries[0].Index]
 	}
-	return nil
 }
