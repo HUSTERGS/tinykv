@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -43,6 +44,21 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	if d.RaftGroup.HasReady() {
+		rd := d.RaftGroup.Ready()
+		// 写入log
+		d.peerStorage.Append(rd.Entries, new(engine_util.WriteBatch))
+		// apply committed entries
+		for _, ent := range rd.CommittedEntries {
+			d.HandleMsg(message.Msg{
+				Data:     ent.Data,
+			})
+		}
+		// 发送消息
+		d.peer.Send(d.ctx.trans, rd.Messages)
+		// 更新状态
+		d.RaftGroup.Advance(rd)
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -113,7 +129,10 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
+
+
 	// Your Code Here (2B).
+	
 }
 
 func (d *peerMsgHandler) onTick() {

@@ -308,6 +308,25 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	for _, ent := range entries {
+		// 写入操作参考了peer_storage_test中的appendEnts方法
+		key := meta.RaftLogKey(ps.region.Id, ent.Index)
+		//value, err := ent.Marshal()
+		//if err != nil {
+		//	return err
+		//}
+		//raftWB.SetCF("raft", key, value)
+		raftWB.SetMeta(key, &ent)
+	}
+	//if err := raftWB.WriteToDB(ps.Engines.Raft); err != nil {
+	//	return err
+	//}
+	if len(entries) != 0 {
+		// 更新
+		ps.raftState.LastIndex = entries[len(entries) - 1].Index
+		ps.raftState.LastTerm = entries[len(entries) - 1].Term
+	}
+	// TODO: 删除数据
 	return nil
 }
 
