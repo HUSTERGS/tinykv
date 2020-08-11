@@ -173,8 +173,8 @@ func (rn *RawNode) Ready() Ready {
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
 	//return !reflect.DeepEqual(rn.lastReady, rn.Ready())
-	return reflect.DeepEqual(rn.prevHardState, rn.Raft.getHardState()) && reflect.DeepEqual(rn.prevSoftState, rn.Raft.getSoftState())
-
+	return !(reflect.DeepEqual(rn.prevHardState, rn.Raft.getHardState()) &&
+		len(rn.Raft.RaftLog.unstableEntries()) + len(rn.Raft.RaftLog.nextEnts()) + len(rn.Raft.msgs) == 0)
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
@@ -186,12 +186,17 @@ func (rn *RawNode) Advance(rd Ready) {
 	//rn.Raft.Lead = rd.Lead
 
 	rn.Raft.msgs = make([]pb.Message, 0)
-	rn.prevSoftState = rd.SoftState
-	rn.prevHardState = rd.HardState
-	if len(rd.Entries) != 0 {
+	if rd.SoftState != nil {
+		rn.prevSoftState = rd.SoftState
+	}
+	if !IsEmptyHardState(rd.HardState) {
+		rn.prevHardState = rd.HardState
+	}
+	if len(rd.Entries) > 0 {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
-		rn.Raft.RaftLog.applied = rd.Entries[len(rd.Entries)-1].Index
-		rn.Raft.RaftLog.committed = max(rn.Raft.RaftLog.committed, rn.Raft.RaftLog.stabled)
+	}
+	if len(rd.CommittedEntries) > 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
 }
 
