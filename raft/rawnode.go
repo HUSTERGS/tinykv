@@ -159,6 +159,8 @@ func (rn *RawNode) Ready() Ready {
 	if !reflect.DeepEqual(rn.prevHardState, rn.Raft.getHardState()) {
 		hardState = rn.Raft.getHardState()
 	}
+	//log.Infof("#%d Ready Called", rn.Raft.id)
+	
 	return Ready{
 		SoftState:        softState,
 		HardState:        hardState,

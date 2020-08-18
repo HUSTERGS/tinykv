@@ -29,7 +29,7 @@ func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 
 func (s *StandAloneStorage) Start() error {
 	// Your Code Here (1).
-	// 由于close方法需要保证两个都有，所以暂时先初始化一个
+	// 由于stop方法需要保证两个都有，所以需要两个都初始化
 	s.engine = engine_util.NewEngines(engine_util.CreateDB("kv", s.conf),
 		engine_util.CreateDB("raft", s.conf), "kv", "raft")
 	return nil

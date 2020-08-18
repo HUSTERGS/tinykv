@@ -173,6 +173,10 @@ func newRaft(c *Config) *Raft {
 	lastIndex := raftLog.LastIndex()
 
 	Prs := map[uint64]*Progress{}
+	state, confState, _ := raftLog.storage.InitialState()
+	if c.peers == nil {
+		c.peers = confState.GetNodes()
+	}
 	if c.peers != nil {
 		for _, peerId := range c.peers {
 			Prs[peerId] = &Progress{
@@ -183,10 +187,14 @@ func newRaft(c *Config) *Raft {
 		Prs[c.ID].Match = lastIndex // 节点本身的match单独设置
 	}
 
+	//if c.peers != nil {
+	//
+	//} else {
+	//	c.peers = confState.GetNodes()
+	//}
 
-	state, _, _ := raftLog.storage.InitialState()
 	raftLog.committed = state.Commit
-
+	//log.Infof("When #%d creating, committed = %d", c.ID, state.Commit)
 	return &Raft{
 		id:               c.ID,
 		Term:             state.Term,
@@ -277,6 +285,7 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	//log.Infof("#%d become follower", r.id)
 	r.Term = term
 	r.Lead = lead
 	r.Vote = None
@@ -287,6 +296,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	// 如果已经是candidate
+	//log.Infof("#%d become candidate", r.id)
 	r.State = StateCandidate
 	r.Term++
 }
@@ -294,7 +304,7 @@ func (r *Raft) becomeCandidate() {
 // 开启一轮新的投票
 func (r *Raft) startNewRoundVoteRequest() {
 	// 投票给自己
-
+	//log.Infof("#%d start request vote", r.id)
 	r.Vote = r.id
 	r.votes = map[uint64]bool{}
 	r.votes[r.id] = true // TODO: 其实这里很奇怪，到底需不需要修改Vote字段，还是只需要修改votes的map即可
@@ -320,16 +330,16 @@ func (r *Raft) startNewRoundVoteRequest() {
 				LogTerm: r.RaftLog.LastTerm(),
 				Index:   r.RaftLog.LastIndex(),
 			})
-			// TODO: 此处应该添加Entries等字段
 		}
 	}
+
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-
+	//log.Infof("#%d become leader", r.id)
 	r.State = StateLeader
 	// 添加一个空的
 	r.RaftLog.AppendEntry(&pb.Entry{
@@ -389,6 +399,13 @@ func (r *Raft) updateCommit() bool {
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
+
+
+	if m.MsgType != pb.MessageType_MsgHup {
+		//log.Infof("message type is not msghup")
+	} else {
+		//log.Infof("***********message type is msghup*********")
+	}
 	switch r.State {
 	case StateFollower:
 		r.stepFollower(m)
@@ -403,6 +420,7 @@ func (r *Raft) Step(m pb.Message) error {
 
 
 func (r *Raft) stepFollower(m pb.Message) {
+	//log.Infof("Raft Step Function Called %d Follower", r.id)
 	switch m.MsgType {
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
@@ -450,6 +468,7 @@ func (r *Raft) stepFollower(m pb.Message) {
 }
 
 func (r * Raft) stepCandidate(m pb.Message) {
+	//log.Infof("Raft Step Function Called %d Candidate", r.id)
 	switch m.MsgType {
 	case pb.MessageType_MsgAppend:
 		if m.Term < r.Term {
@@ -467,6 +486,7 @@ func (r * Raft) stepCandidate(m pb.Message) {
 		}
 
 	case pb.MessageType_MsgRequestVoteResponse:
+		//log.Infof("#%d received vote response %v", r.id)
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, None)
 			break
@@ -476,9 +496,12 @@ func (r * Raft) stepCandidate(m pb.Message) {
 
 		r.votes[m.From] = !m.Reject
 		count := 0
+		reverseCount := 0
 		for _, v := range r.votes {
 			if v {
 				count++
+			} else {
+				reverseCount++
 			}
 		}
 		// 比较对象是所有人
@@ -489,13 +512,9 @@ func (r * Raft) stepCandidate(m pb.Message) {
 					r.sendHeartbeat(k)
 				}
 			}
-		} else {
-			// TODO: 这个地方非常奇怪
-			if len(r.votes) == len(r.Prs) {
-				// 如果所有人已经投票，但是却没有赢，那么就需要变为follower
-				r.becomeFollower(r.Term, None)
-			}
-			//r.becomeFollower(r.Term, None)
+		} else if reverseCount >= (len(r.Prs) +1) / 2{
+			// 如果有半数及以上的人反对则直接变为follower
+			r.becomeFollower(r.Term, None)
 		}
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
@@ -525,6 +544,7 @@ func (r * Raft) stepCandidate(m pb.Message) {
 }
 
 func (r * Raft) stepLeader(m pb.Message) {
+	//log.Infof("Raft Step Function Called %d Leader", r.id)
 	switch m.MsgType {
 	case pb.MessageType_MsgAppend:
 		if m.Term > r.Term {
@@ -656,10 +676,16 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 						// 如果冲突是真的"冲突"，需要更新自己的stableIndex
 						r.RaftLog.stabled = min(ent.Index-1, r.RaftLog.stabled)
 					}
-					r.RaftLog.entries = r.RaftLog.entries[0:m.Index]
+					firstIndex, _ := r.RaftLog.storage.FirstIndex()
+					r.RaftLog.entries = r.RaftLog.entries[0:m.Index-firstIndex+1]
+
 					r.RaftLog.AppendEntries(m.Entries)
 					break
 				}
+			}
+			// 不能使用r.Raft.LastIndex，commit的更改必须来自于leader
+			if m.Commit > r.RaftLog.committed {
+				r.RaftLog.committed = min(m.Index + uint64(len(m.Entries)), m.Commit)
 			}
 			r.msgs = append(r.msgs, pb.Message{
 				MsgType: pb.MessageType_MsgAppendResponse,
@@ -680,10 +706,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			Reject:  true,
 		})
 		return
-	}
-	// 不能使用r.Raft.LastIndex，commit的更改必须来自于leader
-	if m.Commit > r.RaftLog.committed {
-		r.RaftLog.committed = min(m.Index + uint64(len(m.Entries)), m.Commit)
 	}
 }
 

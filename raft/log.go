@@ -90,6 +90,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+	//log.Infof("nextEnts Called, lastIndex: %d, applied: %d, committed: %d", l.LastIndex(), l.applied, l.committed)
 	ent := make([]pb.Entry, 0)
 	for i := l.applied+1; i <= l.committed; i++ {
 		ent = append(ent, *l.GetEntry(i))
@@ -102,7 +103,8 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		return 0
+		lastIndex, _ :=  l.storage.LastIndex()
+		return lastIndex
 	}
 	return l.entries[len(l.entries)-1].Index
 }
@@ -111,7 +113,7 @@ func (l *RaftLog) LastIndex() uint64 {
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 || i > l.LastIndex(){
-		return 0, nil
+		return l.storage.Term(i)
 	} else {
 		return l.GetEntry(i).Term, nil
 	}
@@ -133,9 +135,12 @@ func (l * RaftLog) AppendEntries(ents []*pb.Entry) {
 }
 
 func (l * RaftLog) GetEntry(i uint64) *pb.Entry {
-	if len(l.entries) == 0 || l.entries[0].Index > i || i == 0{
-		return &pb.Entry{Term: 0, Index: 0}
+
+	if len(l.entries) == 0 || l.entries[0].Index > i || i == 0 {
+		return &pb.Entry{Term: 0, Index: l.LastIndex()}
 	} else {
+		//log.Infof("try to get log of %d ", i)
+		//log.Infof("current logs: %+v", l.entries)
 		return &l.entries[i - l.entries[0].Index]
 	}
 }

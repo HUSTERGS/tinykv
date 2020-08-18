@@ -88,7 +88,7 @@ func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest
 
 func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*kvrpcpb.RawScanResponse, error) {
 	// Your Code Here (1).
-	respKvPairs := []*kvrpcpb.KvPair{}
+	var respKvPairs []*kvrpcpb.KvPair
 	reader, err := server.storage.Reader(req.Context)
 	if err != nil {
 		return nil, err

@@ -190,7 +190,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	cluster := NewTestCluster(nservers, cfg)
 	cluster.Start()
 	defer cluster.Shutdown()
-
+	//log.Infof("%+v", cluster)
 	electionTimeout := cfg.RaftBaseTickInterval * time.Duration(cfg.RaftElectionTimeoutTicks)
 	// Wait for leader election
 	time.Sleep(2 * electionTimeout)

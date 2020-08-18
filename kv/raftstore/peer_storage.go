@@ -311,13 +311,9 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	for _, ent := range entries {
 		// 写入操作参考了peer_storage_test中的appendEnts方法
 		key := meta.RaftLogKey(ps.region.Id, ent.Index)
-		//value, err := ent.Marshal()
-		//if err != nil {
-		//	return err
-		//}
-		//raftWB.SetCF("raft", key, value)
 		raftWB.SetMeta(key, &ent)
 	}
+	// 似乎不需要自己手动写入？
 	//if err := raftWB.WriteToDB(ps.Engines.Raft); err != nil {
 	//	return err
 	//}
@@ -350,6 +346,20 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+	raftWB := new(engine_util.WriteBatch)
+	// log entries信息
+	ps.Append(ready.Entries, raftWB)
+	// raft state 信息
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	ps.Engines.WriteRaft(raftWB)
+
+	kvWB := new(engine_util.WriteBatch)
+	// apply state 信息
+	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+	// region state
+	//kvWB.SetMeta(meta.RegionStateKey(ps.region.Id), ps.region)
+	ps.Engines.WriteKV(kvWB)
+
 	return nil, nil
 }
 
