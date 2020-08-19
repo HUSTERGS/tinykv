@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"time"
 
@@ -59,11 +60,28 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		//	log.Infof("*****#%d msg: %d %+v******",d.regionId, index,  msg)
 		//}
 		// apply committed entries，执行已经apply的命令
+
+		// 分为两个步骤，执行，以及返回消息cb（如果有的话）
 		for _, ent := range rd.CommittedEntries {
 			m := raft_cmdpb.Request{}
 			err := m.Unmarshal(ent.Data)
 			// 如果并不是command信息，直接跳过
-			if err != nil || len(d.proposals) == 0{
+			if err != nil {
+				continue
+			}
+			// 不管如何都要apply
+			if m.CmdType == raft_cmdpb.CmdType_Put || m.CmdType == raft_cmdpb.CmdType_Delete {
+				KvWB := new(engine_util.WriteBatch)
+				if m.CmdType == raft_cmdpb.CmdType_Put {
+					KvWB.SetCF(m.Put.Cf, m.Put.Key, m.Put.Value)
+				} else {
+					KvWB.DeleteCF(m.Delete.Cf, m.Delete.Key)
+				}
+				KvWB.WriteToDB(d.peerStorage.Engines.Kv)
+			}
+
+			// 处理cb
+			if len(d.proposals) == 0{
 				continue
 			}
 			firstProposal := d.proposals[0]
@@ -79,7 +97,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					//KvTxn := d.peerStorage.Engines.Kv.NewTransaction(false)
 					//item, err := KvTxn.Get(m.Get.Key)
 					value, err := engine_util.GetCF(d.peerStorage.Engines.Kv, m.Get.Cf, m.Get.Key)
+					log.Infof("GET: 当前id为: %d", d.PeerId())
 					if err != nil {
+						log.Infof("未找到key")
 						firstProposal.cb.Done(ErrResp(err))
 						break
 					}
@@ -93,16 +113,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					})
 				case raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete:
 					// Put/Delete一起处理
-					KvWB := new(engine_util.WriteBatch)
+					//log.Infof("Delete: 当前id为: %d", d.PeerId())
 					var responses []*raft_cmdpb.Response
 					if m.CmdType == raft_cmdpb.CmdType_Put {
-						KvWB.SetCF(m.Put.Cf, m.Put.Key, m.Put.Value)
-						responses = append(responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Put, Put: &raft_cmdpb.PutResponse{}})
+						responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Put, Put: &raft_cmdpb.PutResponse{}}}
 					} else {
-						KvWB.DeleteCF(m.Delete.Cf, m.Delete.Key)
-						responses = append(responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Delete,Delete: &raft_cmdpb.DeleteResponse{}})
+						responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Delete, Delete: &raft_cmdpb.DeleteResponse{}}}
 					}
-					KvWB.WriteToDB(d.peerStorage.Engines.Kv)
 					firstProposal.cb.Done(&raft_cmdpb.RaftCmdResponse{
 						Header:        &raft_cmdpb.RaftResponseHeader{CurrentTerm: ent.Term},
 						Responses:     responses,
@@ -111,7 +128,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				case raft_cmdpb.CmdType_Snap:
 					// 对于snap的处理
 					// 2b目前先无脑传递
-					log.Infof("收到了Snap指令")
+					//log.Infof("收到了Snap指令")
 					var responses []*raft_cmdpb.Response
 					responses = append(responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Snap, Snap: &raft_cmdpb.SnapResponse{Region: d.Region()}})
 					firstProposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
@@ -123,13 +140,20 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				}
 				d.proposals = d.proposals[1:]
 			}
+			// update and persist the apply state when applying the log entries
+			d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+			KvWB := new(engine_util.WriteBatch)
+			KvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			KvWB.WriteToDB(d.peerStorage.Engines.Kv)
 		}
+
 		// 更新状态
 		d.RaftGroup.Advance(rd)
 	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
+	//log.Infof("处理消息: %+v", msg)
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
 		raftMsg := msg.Data.(*rspb.RaftMessage)
@@ -197,7 +221,9 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
-
+	if msg.AdminRequest != nil {
+		log.Infof("%+v", msg.AdminRequest)
+	}
 	// Your Code Here (2B).
 	data, _ := msg.Requests[0].Marshal()
 	d.RaftGroup.Propose(data)
@@ -205,6 +231,11 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	term := d.RaftGroup.Raft.RaftLog.LastTerm()
 	// 添加新的proposal
 	// TODO: 关于这个地方的index以及term到底应该填什么
+	if data != nil {
+		m := raft_cmdpb.Request{}
+		m.Unmarshal(data)
+		//log.Infof("%d收到proposal,内容为%+v", d.PeerId(), m)
+	}
 	d.proposals = append(d.proposals, &proposal{
 		index: index,
 		term:  term,

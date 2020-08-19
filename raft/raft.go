@@ -558,9 +558,10 @@ func (r * Raft) stepLeader(m pb.Message) {
 			if m.Reject {
 				// 如果被拒绝，说明存在冲突，减小Next
 				r.Prs[m.From].Next--
-				if r.Prs[m.From].Next == r.Prs[m.From].Match {
-					panic("到达Match点依然没有匹配")
-				}
+				// 这个地方很奇怪
+				//if r.Prs[m.From].Next == r.Prs[m.From].Match {
+				//	panic("到达Match点依然没有匹配")
+				//}
 				// 如果有冲突就继续发送
 				r.sendAppend(m.From)
 			} else {
@@ -576,7 +577,9 @@ func (r * Raft) stepLeader(m pb.Message) {
 				}
 			}
 		} else if m.Term > r.Term {
-			panic("leader见鬼了")
+			//panic("leader见鬼了")
+			r.becomeFollower(m.Term, m.From)
+			r.handleAppendEntries(m)
 		}
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
