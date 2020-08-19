@@ -61,80 +61,68 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// apply committed entries，执行已经apply的命令
 		for _, ent := range rd.CommittedEntries {
 			m := raft_cmdpb.Request{}
-			m.Unmarshal(ent.Data)
-			switch m.CmdType {
-			case raft_cmdpb.CmdType_Get:
-				KvTxn := d.peerStorage.Engines.Kv.NewTransaction(false)
-				//item, err := KvTxn.Get(m.Get.Key)
-				value, err := engine_util.GetCF(d.peerStorage.Engines.Kv, m.Get.Cf, m.Get.Key)
-				if err != nil {
-					d.proposals = append(d.proposals, &proposal{
-						index: ent.Index,
-						term:  ent.Term,
-						cb:    &message.Callback{
-							Resp: ErrResp(err),
-							Txn:  KvTxn,
-						},
-					})
+			err := m.Unmarshal(ent.Data)
+			// 如果并不是command信息，直接跳过
+			if err != nil || len(d.proposals) == 0{
+				continue
+			}
+			firstProposal := d.proposals[0]
+			if ent.Index == firstProposal.index {
+				// 如果index相等但是term不相等
+				if ent.Term != firstProposal.term {
+					firstProposal.cb.Done(ErrRespStaleCommand(ent.Term))
+					d.proposals = d.proposals[1:]
 					continue
 				}
-				//value, _ := item.Value()
-				var responses []*raft_cmdpb.Response
-				responses = append(responses, &raft_cmdpb.Response{Get: &raft_cmdpb.GetResponse{Value: value}})
-				d.proposals = append(d.proposals, &proposal{
-					index: ent.Index,
-					term:  ent.Term,
-					cb:    &message.Callback{
-						Resp: &raft_cmdpb.RaftCmdResponse{
-							Header:               &raft_cmdpb.RaftResponseHeader{CurrentTerm: ent.Term},
-							Responses:            responses,
-							AdminResponse:        nil,
-						},
-						Txn:  KvTxn,
-					},
-				})
-			case raft_cmdpb.CmdType_Put:
-				KvWB := new(engine_util.WriteBatch)
-				KvWB.SetCF(m.Put.Cf, m.Put.Key, m.Put.Value)
-				KvWB.WriteToDB(d.peerStorage.Engines.Kv)
-				var responses []*raft_cmdpb.Response
-				responses = append(responses, &raft_cmdpb.Response{Put: &raft_cmdpb.PutResponse{}})
-				d.proposals = append(d.proposals, &proposal{
-					index: ent.Index,
-					term:  ent.Term,
-					cb:    &message.Callback{
-						Resp: &raft_cmdpb.RaftCmdResponse{
-							Header:               &raft_cmdpb.RaftResponseHeader{CurrentTerm: ent.Term},
-							Responses:            responses,
-							AdminResponse:        nil,
-						},
-						Txn:  nil,
-					},
-				})
-			case raft_cmdpb.CmdType_Delete:
-				KvWB := new(engine_util.WriteBatch)
-				KvWB.DeleteCF(m.Put.Cf, m.Put.Key)
-				KvWB.WriteToDB(d.peerStorage.Engines.Kv)
-				var responses []*raft_cmdpb.Response
-				responses = append(responses, &raft_cmdpb.Response{Delete: &raft_cmdpb.DeleteResponse{}})
-				d.proposals = append(d.proposals, &proposal{
-					index: ent.Index,
-					term:  ent.Term,
-					cb:    &message.Callback{
-						Resp: &raft_cmdpb.RaftCmdResponse{
-							Header:               &raft_cmdpb.RaftResponseHeader{CurrentTerm: ent.Term},
-							Responses:            responses,
-							AdminResponse:        nil,
-						},
-						Txn:  nil,
-					},
-				})
-			case raft_cmdpb.CmdType_Invalid:
+				switch m.CmdType {
+				case raft_cmdpb.CmdType_Get:
+					//KvTxn := d.peerStorage.Engines.Kv.NewTransaction(false)
+					//item, err := KvTxn.Get(m.Get.Key)
+					value, err := engine_util.GetCF(d.peerStorage.Engines.Kv, m.Get.Cf, m.Get.Key)
+					if err != nil {
+						firstProposal.cb.Done(ErrResp(err))
+						break
+					}
+					//value, _ := item.Value()
+					var responses []*raft_cmdpb.Response
+					responses = append(responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Get, Get: &raft_cmdpb.GetResponse{Value: value}})
+					firstProposal.cb.Done(&raft_cmdpb.RaftCmdResponse{
+						Header:        &raft_cmdpb.RaftResponseHeader{CurrentTerm: ent.Term},
+						Responses:     responses,
+						AdminResponse: nil,
+					})
+				case raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete:
+					// Put/Delete一起处理
+					KvWB := new(engine_util.WriteBatch)
+					var responses []*raft_cmdpb.Response
+					if m.CmdType == raft_cmdpb.CmdType_Put {
+						KvWB.SetCF(m.Put.Cf, m.Put.Key, m.Put.Value)
+						responses = append(responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Put, Put: &raft_cmdpb.PutResponse{}})
+					} else {
+						KvWB.DeleteCF(m.Delete.Cf, m.Delete.Key)
+						responses = append(responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Delete,Delete: &raft_cmdpb.DeleteResponse{}})
+					}
+					KvWB.WriteToDB(d.peerStorage.Engines.Kv)
+					firstProposal.cb.Done(&raft_cmdpb.RaftCmdResponse{
+						Header:        &raft_cmdpb.RaftResponseHeader{CurrentTerm: ent.Term},
+						Responses:     responses,
+						AdminResponse: nil,
+					})
+				case raft_cmdpb.CmdType_Snap:
+					// 对于snap的处理
+					// 2b目前先无脑传递
+					log.Infof("收到了Snap指令")
+					var responses []*raft_cmdpb.Response
+					responses = append(responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Snap, Snap: &raft_cmdpb.SnapResponse{Region: d.Region()}})
+					firstProposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+					firstProposal.cb.Done(&raft_cmdpb.RaftCmdResponse{
+						Header:        &raft_cmdpb.RaftResponseHeader{CurrentTerm: ent.Term},
+						Responses:     responses,
+						AdminResponse: nil,
+					})
+				}
+				d.proposals = d.proposals[1:]
 			}
-		}
-		// 发送完成相关信息
-		for _, p := range d.proposals {
-			p.cb.Done(p.cb.Resp)
 		}
 		// 更新状态
 		d.RaftGroup.Advance(rd)
@@ -210,10 +198,18 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 
-
 	// Your Code Here (2B).
 	data, _ := msg.Requests[0].Marshal()
 	d.RaftGroup.Propose(data)
+	index := d.RaftGroup.Raft.RaftLog.LastIndex()
+	term := d.RaftGroup.Raft.RaftLog.LastTerm()
+	// 添加新的proposal
+	// TODO: 关于这个地方的index以及term到底应该填什么
+	d.proposals = append(d.proposals, &proposal{
+		index: index,
+		term:  term,
+		cb:    cb,
+	})
 }
 
 func (d *peerMsgHandler) onTick() {
